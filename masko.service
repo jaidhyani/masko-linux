@@ -1,0 +1,14 @@
+[Unit]
+Description=Masko Desktop - Claude Code companion
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=MASKO_DIR
+ExecStart=MASKO_DIR/.venv/bin/python -m backend
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target

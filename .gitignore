@@ -1,0 +1,16 @@
+# Build artifacts
+.venv/
+__pycache__/
+*.o
+*.pyc
+overlay/masko-overlay
+overlay/tests/test_card_stack
+overlay/tests/test_ipc_buffer
+overlay/tests/test_permission_ui
+overlay/tests/test_session_switcher
+overlay/tests/test_toast
+
+# E2E test artifacts
+tests/e2e-screenshots/
+tests/e2e-report.md
+tests/e2e-config.json

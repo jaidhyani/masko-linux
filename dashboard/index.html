@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Masko Desktop</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+}
+
+header {
+    background: #16213e;
+    padding: 1rem 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #0f3460;
+}
+
+header h1 {
+    font-size: 1.4rem;
+    color: #e94560;
+}
+
+.connection-status {
+    font-size: 0.8rem;
+    padding: 0.3rem 0.8rem;
+    border-radius: 12px;
+    background: #333;
+}
+.connection-status.connected { background: #1b5e20; color: #a5d6a7; }
+.connection-status.disconnected { background: #b71c1c; color: #ef9a9a; }
+
+nav {
+    display: flex;
+    background: #16213e;
+    border-bottom: 2px solid #0f3460;
+}
+
+nav button {
+    flex: 1;
+    padding: 0.8rem;
+    background: none;
+    border: none;
+    color: #8888aa;
+    font-size: 0.95rem;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+}
+
+nav button:hover { color: #ccc; }
+nav button.active { color: #e94560; border-bottom-color: #e94560; }
+
+.badge {
+    background: #e94560;
+    color: #fff;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 8px;
+    margin-left: 0.3rem;
+}
+
+main { padding: 1.5rem 2rem; max-width: 960px; margin: 0 auto; }
+
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.card {
+    background: #16213e;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 0.8rem;
+}
+
+.session-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.status-dot.working { background: #4caf50; }
+.status-dot.permission_pending { background: #ff9800; animation: pulse 1.5s infinite; }
+.status-dot.ended { background: #666; }
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.session-info { flex: 1; }
+.session-id { font-weight: 600; color: #e94560; font-size: 0.9rem; }
+.session-meta { font-size: 0.8rem; color: #888; margin-top: 0.2rem; }
+
+.event-item { padding: 0.6rem 0; border-bottom: 1px solid #0f3460; }
+.event-item:last-child { border-bottom: none; }
+.event-type { color: #e94560; font-weight: 600; font-size: 0.85rem; }
+.event-time { color: #666; font-size: 0.75rem; float: right; }
+.event-detail { font-size: 0.8rem; color: #999; margin-top: 0.2rem; }
+
+.notif-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+}
+.notif-item.unread { border-left: 3px solid #e94560; }
+.notif-body { flex: 1; }
+.notif-title { font-weight: 600; font-size: 0.9rem; }
+.notif-message { font-size: 0.8rem; color: #999; margin-top: 0.2rem; }
+.notif-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
+
+button.small {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+    background: #0f3460;
+    color: #ccc;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+button.small:hover { background: #1a4a8a; }
+button.small.danger { background: #b71c1c; }
+button.small.danger:hover { background: #d32f2f; }
+
+.settings-group { margin-bottom: 1.5rem; }
+.settings-group h3 { color: #e94560; margin-bottom: 0.8rem; font-size: 1rem; }
+.setting-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+}
+.setting-label { color: #aaa; font-size: 0.9rem; }
+.setting-value { color: #e0e0e0; font-family: monospace; font-size: 0.85rem; }
+
+.mascot-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 0.8rem;
+}
+.mascot-option {
+    text-align: center;
+    padding: 0.8rem;
+    border: 2px solid #0f3460;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+.mascot-option:hover { border-color: #e94560; }
+.mascot-option.selected { border-color: #e94560; background: rgba(233, 69, 96, 0.1); }
+.mascot-name { font-size: 0.8rem; margin-top: 0.4rem; }
+
+.empty-state {
+    text-align: center;
+    color: #666;
+    padding: 3rem 1rem;
+    font-size: 0.95rem;
+}
+
+.clear-all-row {
+    text-align: right;
+    margin-bottom: 1rem;
+}
+</style>
+</head>
+<body>
+
+<header>
+    <h1>Masko Desktop</h1>
+    <span id="ws-status" class="connection-status disconnected">disconnected</span>
+</header>
+
+<nav>
+    <button class="active" data-tab="sessions">Sessions</button>
+    <button data-tab="activity">Activity</button>
+    <button data-tab="notifications">Notifications <span id="notif-badge" class="badge" style="display:none">0</span></button>
+    <button data-tab="settings">Settings</button>
+</nav>
+
+<main>
+    <div id="tab-sessions" class="tab-content active">
+        <div id="sessions-list"></div>
+    </div>
+
+    <div id="tab-activity" class="tab-content">
+        <div id="events-list"></div>
+    </div>
+
+    <div id="tab-notifications" class="tab-content">
+        <div class="clear-all-row">
+            <button class="small danger" onclick="clearAllNotifications()">Clear All</button>
+        </div>
+        <div id="notif-list"></div>
+    </div>
+
+    <div id="tab-settings" class="tab-content">
+        <div id="settings-content"></div>
+    </div>
+</main>
+
+<script>
+const API_BASE = window.location.origin;
+let ws = null;
+
+// --- Tab navigation ---
+
+document.querySelectorAll("nav button").forEach(btn => {
+    btn.addEventListener("click", () => {
+        document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    });
+});
+
+// --- Rendering ---
+
+function renderSessions(sessions) {
+    const el = document.getElementById("sessions-list");
+    if (!sessions.length) {
+        el.innerHTML = '<div class="empty-state">No sessions yet</div>';
+        return;
+    }
+    el.innerHTML = sessions.map(s => `
+        <div class="card">
+            <div class="session-item">
+                <div class="status-dot ${s.phase}"></div>
+                <div class="session-info">
+                    <div class="session-id">${escapeHtml(s.id)}</div>
+                    <div class="session-meta">
+                        ${s.cwd ? escapeHtml(s.cwd) : "unknown dir"}
+                        ${s.model ? " &middot; " + escapeHtml(s.model) : ""}
+                        &middot; ${s.event_count} events
+                    </div>
+                </div>
+                <div style="font-size:0.8rem;color:#888">${s.phase}</div>
+            </div>
+        </div>
+    `).join("");
+}
+
+function renderEvents(events) {
+    const el = document.getElementById("events-list");
+    if (!events.length) {
+        el.innerHTML = '<div class="empty-state">No activity recorded</div>';
+        return;
+    }
+    const reversed = [...events].reverse();
+    el.innerHTML = '<div class="card">' + reversed.map(e => `
+        <div class="event-item">
+            <span class="event-type">${escapeHtml(e.hook_event_name)}</span>
+            <span class="event-time">${formatTime(e.received_at)}</span>
+            <div class="event-detail">
+                ${e.session_id ? "Session: " + escapeHtml(e.session_id.slice(0, 12)) + "..." : ""}
+                ${e.tool_name ? " &middot; Tool: " + escapeHtml(e.tool_name) : ""}
+            </div>
+        </div>
+    `).join("") + '</div>';
+}
+
+function renderNotifications(notifications) {
+    const el = document.getElementById("notif-list");
+    const unread = notifications.filter(n => !n.read).length;
+    const badge = document.getElementById("notif-badge");
+
+    if (unread > 0) {
+        badge.textContent = unread;
+        badge.style.display = "inline";
+    } else {
+        badge.style.display = "none";
+    }
+
+    if (!notifications.length) {
+        el.innerHTML = '<div class="empty-state">No notifications</div>';
+        return;
+    }
+
+    el.innerHTML = notifications.map(n => `
+        <div class="card">
+            <div class="notif-item ${n.read ? '' : 'unread'}">
+                <div class="notif-body">
+                    <div class="notif-title">${escapeHtml(n.title)}</div>
+                    <div class="notif-message">${escapeHtml(n.message)}</div>
+                    <div class="notif-actions">
+                        ${!n.read ? `<button class="small" onclick="markRead('${n.id}')">Mark Read</button>` : ''}
+                        <button class="small danger" onclick="dismissNotification('${n.id}')">Dismiss</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `).join("");
+}
+
+function renderSettings(config) {
+    const el = document.getElementById("settings-content");
+    const mascots = ["masko", "claude", "pixel", "ghost"];
+    const selected = config.selected_mascot || "masko";
+
+    el.innerHTML = `
+        <div class="settings-group">
+            <h3>Mascot</h3>
+            <div class="mascot-grid">
+                ${mascots.map(m => `
+                    <div class="mascot-option ${m === selected ? 'selected' : ''}" onclick="selectMascot('${m}')">
+                        <div style="font-size:2rem">${mascotEmoji(m)}</div>
+                        <div class="mascot-name">${m}</div>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>Overlay Position</h3>
+            <div class="card">
+                ${Object.entries(config.overlay || {}).map(([k, v]) => `
+                    <div class="setting-row">
+                        <span class="setting-label">${k}</span>
+                        <span class="setting-value">${v}</span>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>Server</h3>
+            <div class="card">
+                ${Object.entries(config.server || {}).map(([k, v]) => `
+                    <div class="setting-row">
+                        <span class="setting-label">${k}</span>
+                        <span class="setting-value">${v}</span>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+
+        <div class="settings-group">
+            <h3>Hotkeys</h3>
+            <div class="card">
+                ${Object.entries(config.hotkeys || {}).map(([k, v]) => `
+                    <div class="setting-row">
+                        <span class="setting-label">${k}</span>
+                        <span class="setting-value">${v}</span>
+                    </div>
+                `).join("")}
+            </div>
+        </div>
+    `;
+}
+
+// --- Helpers ---
+
+function escapeHtml(s) {
+    if (!s) return "";
+    const div = document.createElement("div");
+    div.textContent = s;
+    return div.innerHTML;
+}
+
+function formatTime(ts) {
+    if (!ts) return "";
+    try {
+        return new Date(ts).toLocaleTimeString();
+    } catch {
+        return ts;
+    }
+}
+
+function mascotEmoji(name) {
+    const map = { masko: "\u{1F431}", claude: "\u{1F916}", pixel: "\u{1F47E}", ghost: "\u{1F47B}" };
+    return map[name] || "\u{2753}";
+}
+
+// --- API calls ---
+
+async function fetchJSON(path) {
+    const resp = await fetch(API_BASE + path);
+    return resp.json();
+}
+
+async function loadAll() {
+    try {
+        const [sessions, events, notifications, config] = await Promise.all([
+            fetchJSON("/api/sessions"),
+            fetchJSON("/api/events"),
+            fetchJSON("/api/notifications"),
+            fetchJSON("/api/config"),
+        ]);
+        renderSessions(sessions);
+        renderEvents(events);
+        renderNotifications(notifications);
+        renderSettings(config);
+    } catch (err) {
+        console.error("Failed to load data:", err);
+    }
+}
+
+async function markRead(id) {
+    await fetch(API_BASE + "/api/notifications/" + id + "/read", { method: "POST" });
+    loadAll();
+}
+
+async function dismissNotification(id) {
+    await fetch(API_BASE + "/api/notifications/" + id + "/read", { method: "POST" });
+    loadAll();
+}
+
+async function clearAllNotifications() {
+    await fetch(API_BASE + "/api/notifications/clear", { method: "POST" });
+    loadAll();
+}
+
+function selectMascot(name) {
+    // Highlight in UI immediately
+    document.querySelectorAll(".mascot-option").forEach(el => {
+        el.classList.toggle("selected", el.querySelector(".mascot-name").textContent === name);
+    });
+}
+
+// --- WebSocket ---
+
+function connectWs() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(proto + "//" + location.host + "/ws");
+
+    ws.onopen = () => {
+        document.getElementById("ws-status").textContent = "connected";
+        document.getElementById("ws-status").className = "connection-status connected";
+    };
+
+    ws.onclose = () => {
+        document.getElementById("ws-status").textContent = "disconnected";
+        document.getElementById("ws-status").className = "connection-status disconnected";
+        setTimeout(connectWs, 3000);
+    };
+
+    ws.onerror = () => ws.close();
+
+    ws.onmessage = (msg) => {
+        try {
+            const data = JSON.parse(msg.data);
+            if (data.type === "event" || data.type === "session_update") {
+                loadAll();
+            }
+        } catch {
+            // ignore malformed messages
+        }
+    };
+}
+
+// --- Init ---
+loadAll();
+connectWs();
+</script>
+</body>
+</html>

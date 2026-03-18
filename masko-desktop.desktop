@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Masko Desktop
+Exec=systemctl --user start masko-desktop
+Hidden=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+Comment=Claude Code animated companion
