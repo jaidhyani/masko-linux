@@ -90,56 +90,36 @@ cairo_surface_t *masko_video_next_frame(MaskoVideo *v)
                       v->frame->linesize, 0, v->height,
                       v->frame_rgba->data, v->frame_rgba->linesize);
 
-            /* Chroma-key: the mascot videos have a teal/cyan background
-               that varies in brightness but stays in the cyan hue range.
-               Use HSV-based keying to catch all variants. */
-            int stride = v->frame_rgba->linesize[0];
-            for (int y = 0; y < v->height; y++) {
-                uint8_t *row = v->rgba_buf + y * stride;
-                for (int x = 0; x < v->width; x++) {
-                    uint8_t b = row[x * 4 + 0];
-                    uint8_t g = row[x * 4 + 1];
-                    uint8_t r = row[x * 4 + 2];
+            /* Chroma-key: remove the mascot's background color using
+               RGB distance. Works for both saturated (teal/cyan) and
+               unsaturated (grey) backgrounds. */
+            if (v->has_key) {
+                int stride = v->frame_rgba->linesize[0];
+                int kr = v->key_r, kg = v->key_g, kb = v->key_b;
+                for (int y = 0; y < v->height; y++) {
+                    uint8_t *row = v->rgba_buf + y * stride;
+                    for (int x = 0; x < v->width; x++) {
+                        int pb = row[x * 4 + 0];
+                        int pg = row[x * 4 + 1];
+                        int pr = row[x * 4 + 2];
 
-                    /* RGB to HSV — only need hue and saturation */
-                    int mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
-                    int mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
-                    int delta = mx - mn;
+                        int dr = pr - kr;
+                        int dg = pg - kg;
+                        int db = pb - kb;
+                        int dist_sq = dr*dr + dg*dg + db*db;
 
-                    if (delta == 0 || mx == 0) continue; /* grey/black — not background */
-
-                    float sat = (float)delta / mx;
-                    if (sat < 0.08f) continue; /* too unsaturated — not the teal bg */
-
-                    float hue;
-                    if (mx == (int)r)
-                        hue = 60.0f * (float)((int)g - (int)b) / delta;
-                    else if (mx == (int)g)
-                        hue = 60.0f * (2.0f + (float)((int)b - (int)r) / delta);
-                    else
-                        hue = 60.0f * (4.0f + (float)((int)r - (int)g) / delta);
-                    if (hue < 0) hue += 360.0f;
-
-                    /* The teal/cyan background hue is ~170-200 degrees.
-                       Key anything in that range with sufficient brightness. */
-                    int is_bg = (hue >= 160.0f && hue <= 210.0f && mx > 100);
-
-                    if (is_bg) {
-                        /* Distance from hue center (185) for soft edge */
-                        float hue_dist = hue < 185.0f ? 185.0f - hue : hue - 185.0f;
-                        float edge = 1.0f;
-                        if (hue_dist > 15.0f)
-                            edge = (25.0f - hue_dist) / 10.0f;
-                        if (edge > 1.0f) edge = 1.0f;
-
-                        if (edge <= 0.0f) continue;
-
-                        float alpha = 1.0f - edge;
-                        row[x * 4 + 3] = (uint8_t)(alpha * 255.0f);
-                        /* Pre-multiply for Cairo ARGB32 */
-                        row[x * 4 + 0] = (uint8_t)(b * alpha);
-                        row[x * 4 + 1] = (uint8_t)(g * alpha);
-                        row[x * 4 + 2] = (uint8_t)(r * alpha);
+                        if (dist_sq < 1500) {
+                            row[x * 4 + 0] = 0;
+                            row[x * 4 + 1] = 0;
+                            row[x * 4 + 2] = 0;
+                            row[x * 4 + 3] = 0;
+                        } else if (dist_sq < 4000) {
+                            float alpha = (float)(dist_sq - 1500) / 2500.0f;
+                            row[x * 4 + 3] = (uint8_t)(alpha * 255.0f);
+                            row[x * 4 + 0] = (uint8_t)(pb * alpha);
+                            row[x * 4 + 1] = (uint8_t)(pg * alpha);
+                            row[x * 4 + 2] = (uint8_t)(pr * alpha);
+                        }
                     }
                 }
             }
@@ -162,6 +142,14 @@ double masko_video_fps(MaskoVideo *v)
     AVRational r = v->fmt_ctx->streams[v->stream_idx]->avg_frame_rate;
     if (r.den == 0) return 30.0;
     return (double)r.num / r.den;
+}
+
+void masko_video_set_chroma_key(MaskoVideo *v, int r, int g, int b)
+{
+    v->key_r = r;
+    v->key_g = g;
+    v->key_b = b;
+    v->has_key = 1;
 }
 
 void masko_video_close(MaskoVideo *v)

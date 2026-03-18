@@ -148,6 +148,14 @@ static void handle_ipc_message(MaskoWindow *w, PlaybackState *ps,
             return;
         }
 
+        cJSON *jkey = cJSON_GetObjectItem(msg, "chroma_key");
+        if (jkey) {
+            int kr = cJSON_GetObjectItem(jkey, "r")->valueint;
+            int kg = cJSON_GetObjectItem(jkey, "g")->valueint;
+            int kb = cJSON_GetObjectItem(jkey, "b")->valueint;
+            masko_video_set_chroma_key(&ps->video, kr, kg, kb);
+        }
+
         cJSON *jloop = cJSON_GetObjectItem(msg, "loop");
         ps->is_looping = (jloop && cJSON_IsTrue(jloop)) ? 1 : 0;
         ps->fps = masko_video_fps(&ps->video);

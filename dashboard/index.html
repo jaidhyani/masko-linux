@@ -333,12 +333,16 @@ async function renderSettings(config) {
         <div class="settings-group">
             <h3>Mascot</h3>
             <div class="mascot-grid">
-                ${mascots.map(m => `
-                    <div class="mascot-option ${m === selected ? 'selected' : ''}" onclick="selectMascot('${escapeHtml(m)}')">
-                        <div style="font-size:2rem">${mascotEmoji(m)}</div>
-                        <div class="mascot-name">${escapeHtml(m)}</div>
-                    </div>
-                `).join("")}
+                ${mascots.map(m => {
+                    const name = m.name || m;
+                    const display = m.display_name || name;
+                    const thumb = m.thumbnail || "";
+                    return `
+                    <div class="mascot-option ${name === selected ? 'selected' : ''}" onclick="selectMascot('${escapeHtml(name)}')">
+                        ${thumb ? `<img src="${escapeHtml(thumb)}" alt="${escapeHtml(display)}" style="width:64px;height:64px;object-fit:contain;image-rendering:pixelated;">` : `<div style="font-size:2rem">${mascotEmoji(name)}</div>`}
+                        <div class="mascot-name">${escapeHtml(display)}</div>
+                    </div>`;
+                }).join("")}
             </div>
         </div>
 

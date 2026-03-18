@@ -28,6 +28,16 @@ from backend.video_cache import VideoCache
 
 logger = logging.getLogger("masko")
 
+MASCOT_CHROMA_KEYS = {
+    "masko": (158, 212, 223),
+    "clippy": (134, 214, 247),
+    "otto": (156, 198, 223),
+    "rusty": (214, 215, 215),
+    "nugget": (198, 199, 199),
+    "cupidon": (137, 177, 200),
+    "madame-patate": (166, 206, 217),
+}
+
 SOCK_PATH = "/tmp/masko-overlay.sock"
 OVERLAY_BIN = Path(__file__).parent.parent / "overlay" / "masko-overlay"
 MAX_RESPAWN_RETRIES = 5
@@ -161,12 +171,16 @@ class Orchestrator:
         return json.loads(mascot_path.read_text())
 
     def _wire_state_machine(self):
+        key = MASCOT_CHROMA_KEYS.get(self.config.selected_mascot, (158, 212, 223))
+        chroma_key = {"r": key[0], "g": key[1], "b": key[2]}
+
         def on_transition(edge, video_url):
             logger.info("State transition → %s, video: %s", edge.get("target", "?"), video_url)
             resolved = self.video_cache.resolve(video_url)
             logger.info("Resolved video: %s", resolved)
             asyncio.ensure_future(self.ipc.send({
                 "cmd": "play", "video": resolved, "loop": False,
+                "chroma_key": chroma_key,
             }))
 
         def on_loop_start(video_url):
@@ -175,6 +189,7 @@ class Orchestrator:
             logger.info("Resolved loop video: %s", resolved)
             asyncio.ensure_future(self.ipc.send({
                 "cmd": "play", "video": resolved, "loop": True,
+                "chroma_key": chroma_key,
             }))
 
         self.state_machine.on_transition = on_transition

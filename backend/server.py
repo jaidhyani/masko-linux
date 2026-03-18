@@ -186,9 +186,18 @@ async def handle_api_actions_execute(request):
 
 
 async def handle_api_mascots(request):
-    mascots = sorted(
-        p.stem for p in MASCOTS_DIR.glob("*.json")
-    ) if MASCOTS_DIR.exists() else []
+    mascots = []
+    if MASCOTS_DIR.exists():
+        for p in sorted(MASCOTS_DIR.glob("*.json")):
+            try:
+                data = json.loads(p.read_text())
+                thumb = ""
+                nodes = data.get("nodes", [])
+                if nodes:
+                    thumb = nodes[0].get("transparentThumbnailUrl", "")
+                mascots.append({"name": p.stem, "display_name": data.get("name", p.stem), "thumbnail": thumb})
+            except (json.JSONDecodeError, KeyError):
+                mascots.append({"name": p.stem, "display_name": p.stem, "thumbnail": ""})
     return _json_response(mascots)
 
 
