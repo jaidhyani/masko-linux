@@ -112,7 +112,7 @@ static void stop_playback(PlaybackState *ps)
 static void handle_ipc_message(MaskoWindow *w, PlaybackState *ps,
                                CardStack *cards, PermissionUI *perm,
                                ToastUI *toast, SessionSwitcherUI *switcher,
-                               cJSON *msg)
+                               ContextMenu *menu, cJSON *msg)
 {
     cJSON *cmd = cJSON_GetObjectItem(msg, "cmd");
     if (!cmd || !cJSON_IsString(cmd)) return;
@@ -195,11 +195,20 @@ static void handle_ipc_message(MaskoWindow *w, PlaybackState *ps,
         int sel = (jselected && cJSON_IsNumber(jselected)) ? jselected->valueint : 0;
         session_switcher_show(switcher, jsessions, sel);
         card_stack_push(cards, CARD_SESSION_SWITCHER);
+    } else if (strcmp(c, "set_menu") == 0) {
+        cJSON *items = cJSON_GetObjectItem(msg, "items");
+        context_menu_set_items(menu, items);
     } else if (strcmp(c, "session_switcher_nav") == 0) {
         cJSON *jdir = cJSON_GetObjectItem(msg, "direction");
         if (jdir && cJSON_IsString(jdir))
             session_switcher_nav(switcher, jdir->valuestring);
     }
+}
+
+static void close_context_menu(ContextMenu *menu, CardStack *cards)
+{
+    context_menu_hide(menu);
+    card_stack_pop(cards, CARD_CONTEXT_MENU);
 }
 
 static void send_position_event(MaskoIPC *ipc, int x, int y)
@@ -275,6 +284,7 @@ int main(int argc, char **argv)
     toast_init(&toast);
     session_switcher_init(&switcher);
     context_menu_init(&ctx_menu);
+    context_menu_create_popup(&ctx_menu, win.dpy, win.screen);
     int need_redraw = 0;
     int iterations = 0;
     struct timeval last_tick;
@@ -321,6 +331,55 @@ int main(int argc, char **argv)
             XEvent ev;
             XNextEvent(win.dpy, &ev);
 
+            /* Events on the popup menu window */
+            if (ctx_menu.popup_win &&
+                (ev.type == ButtonPress || ev.type == ButtonRelease ||
+                 ev.type == MotionNotify || ev.type == LeaveNotify ||
+                 ev.type == Expose) &&
+                ev.xany.window == ctx_menu.popup_win) {
+
+                if (ev.type == MotionNotify) {
+                    context_menu_hover(&ctx_menu, ev.xmotion.x, ev.xmotion.y);
+                } else if (ev.type == LeaveNotify) {
+                    int prev = ctx_menu.hovered;
+                    ctx_menu.hovered = -1;
+                    if (prev != -1)
+                        context_menu_redraw(&ctx_menu);
+                } else if (ev.type == Expose) {
+                    context_menu_redraw(&ctx_menu);
+                } else if (ev.type == ButtonPress && ev.xbutton.button == 1) {
+                    int hit = context_menu_hit_test(&ctx_menu,
+                                  ev.xbutton.x, ev.xbutton.y);
+                    if (hit >= 0) {
+                        const char *act = ctx_menu.items[hit].action;
+                        if (strcmp(act, "quit") == 0)
+                            running = 0;
+                        if (ipc_connected) {
+                            cJSON *resp = cJSON_CreateObject();
+                            cJSON_AddStringToObject(resp, "event", "menu");
+                            cJSON_AddStringToObject(resp, "action", act);
+                            masko_ipc_send(&ipc, resp);
+                            cJSON_Delete(resp);
+                        }
+                    }
+                    close_context_menu(&ctx_menu, &cards);
+                }
+                continue;
+            }
+
+            /*
+             * Grabbed pointer: clicks outside the popup arrive as
+             * ButtonPress on the main window (or root). Dismiss.
+             */
+            if (ctx_menu.visible && ev.type == ButtonPress &&
+                ev.xany.window != ctx_menu.popup_win) {
+                close_context_menu(&ctx_menu, &cards);
+                /* Re-process this event below only if it's a right-click
+                   on the main window (to reopen the menu). */
+                if (ev.xany.window != win.win)
+                    continue;
+            }
+
             switch (ev.type) {
             case Expose:
                 need_redraw = 1;
@@ -328,81 +387,49 @@ int main(int argc, char **argv)
 
             case ButtonPress:
                 if (ev.xbutton.button == 3) {
-                    /* Right-click: toggle context menu */
-                    if (ctx_menu.visible) {
-                        int hit = context_menu_hit_test(&ctx_menu,
-                                      ev.xbutton.x, ev.xbutton.y, 0, 0);
-                        if (hit < 0) {
-                            context_menu_hide(&ctx_menu);
-                            card_stack_pop(&cards, CARD_CONTEXT_MENU);
-                        }
-                    } else {
-                        context_menu_show(&ctx_menu, ev.xbutton.x, ev.xbutton.y);
+                    if (!ctx_menu.visible) {
+                        context_menu_show_at(&ctx_menu,
+                            ev.xbutton.x_root, ev.xbutton.y_root);
                         card_stack_push(&cards, CARD_CONTEXT_MENU);
                     }
-                    need_redraw = 1;
                 } else if (ev.xbutton.button == 1) {
-                    /* Left-click: check context menu first */
-                    if (ctx_menu.visible) {
-                        int menu_hit = context_menu_hit_test(&ctx_menu,
-                                           ev.xbutton.x, ev.xbutton.y, 0, 0);
-                        if (menu_hit >= 0) {
-                            const char *act = ctx_menu.items[menu_hit].action;
-                            if (strcmp(act, "quit") == 0) {
-                                running = 0;
-                            } else if (strcmp(act, "toggle") == 0) {
-                                if (ipc_connected)
-                                    send_hotkey_event(&ipc, "toggle");
-                            } else if (ipc_connected) {
-                                cJSON *resp = cJSON_CreateObject();
-                                cJSON_AddStringToObject(resp, "event", "menu");
-                                cJSON_AddStringToObject(resp, "action", act);
-                                masko_ipc_send(&ipc, resp);
-                                cJSON_Delete(resp);
-                            }
+                    int sw_hit = session_switcher_hit_test(&switcher,
+                                     ev.xbutton.x, ev.xbutton.y,
+                                     win.width, win.height);
+                    int perm_hit = permission_ui_hit_test(&perm,
+                                       ev.xbutton.x, ev.xbutton.y);
+
+                    if (sw_hit >= 0) {
+                        if (ipc_connected) {
+                            cJSON *resp = cJSON_CreateObject();
+                            cJSON_AddStringToObject(resp, "event", "hotkey");
+                            cJSON_AddStringToObject(resp, "key", "session_confirm");
+                            cJSON_AddNumberToObject(resp, "index", sw_hit);
+                            masko_ipc_send(&ipc, resp);
+                            cJSON_Delete(resp);
                         }
-                        context_menu_hide(&ctx_menu);
-                        card_stack_pop(&cards, CARD_CONTEXT_MENU);
+                        session_switcher_hide(&switcher);
+                        card_stack_pop(&cards, CARD_SESSION_SWITCHER);
+                        need_redraw = 1;
+                    } else if (perm_hit) {
+                        const char *action = (perm_hit == 1) ? "approve" : "deny";
+                        if (ipc_connected) {
+                            cJSON *resp = cJSON_CreateObject();
+                            cJSON_AddStringToObject(resp, "event", "permission_response");
+                            cJSON_AddStringToObject(resp, "id", perm.perm_id);
+                            cJSON_AddStringToObject(resp, "action", action);
+                            masko_ipc_send(&ipc, resp);
+                            cJSON_Delete(resp);
+                        }
+                        permission_ui_hide(&perm);
+                        card_stack_pop(&cards, CARD_PERMISSION);
                         need_redraw = 1;
                     } else {
-                        int sw_hit = session_switcher_hit_test(&switcher,
-                                         ev.xbutton.x, ev.xbutton.y,
-                                         win.width, win.height);
-                        int perm_hit = permission_ui_hit_test(&perm,
-                                           ev.xbutton.x, ev.xbutton.y);
-
-                        if (sw_hit >= 0) {
-                            if (ipc_connected) {
-                                cJSON *resp = cJSON_CreateObject();
-                                cJSON_AddStringToObject(resp, "event", "hotkey");
-                                cJSON_AddStringToObject(resp, "key", "session_confirm");
-                                cJSON_AddNumberToObject(resp, "index", sw_hit);
-                                masko_ipc_send(&ipc, resp);
-                                cJSON_Delete(resp);
-                            }
-                            session_switcher_hide(&switcher);
-                            card_stack_pop(&cards, CARD_SESSION_SWITCHER);
-                            need_redraw = 1;
-                        } else if (perm_hit) {
-                            const char *action = (perm_hit == 1) ? "approve" : "deny";
-                            if (ipc_connected) {
-                                cJSON *resp = cJSON_CreateObject();
-                                cJSON_AddStringToObject(resp, "event", "permission_response");
-                                cJSON_AddStringToObject(resp, "id", perm.perm_id);
-                                cJSON_AddStringToObject(resp, "action", action);
-                                masko_ipc_send(&ipc, resp);
-                                cJSON_Delete(resp);
-                            }
-                            permission_ui_hide(&perm);
-                            card_stack_pop(&cards, CARD_PERMISSION);
-                            need_redraw = 1;
-                        } else {
-                            drag.active = 1;
-                            drag.start_mouse_x = ev.xbutton.x_root;
-                            drag.start_mouse_y = ev.xbutton.y_root;
-                            drag.start_win_x   = win.x;
-                            drag.start_win_y   = win.y;
-                        }
+                        drag.active = 1;
+                        drag.start_mouse_x = ev.xbutton.x_root;
+                        drag.start_mouse_y = ev.xbutton.y_root;
+                        drag.start_win_x   = win.x;
+                        drag.start_win_y   = win.y;
                     }
                 }
                 break;
@@ -412,9 +439,6 @@ int main(int argc, char **argv)
                     int nx = drag.start_win_x + (ev.xmotion.x_root - drag.start_mouse_x);
                     int ny = drag.start_win_y + (ev.xmotion.y_root - drag.start_mouse_y);
                     masko_window_move(&win, nx, ny);
-                } else if (ctx_menu.visible) {
-                    context_menu_hover(&ctx_menu, ev.xmotion.x, ev.xmotion.y, 0, 0);
-                    need_redraw = 1;
                 } else if (perm.visible) {
                     permission_ui_hover(&perm, ev.xmotion.x, ev.xmotion.y);
                     need_redraw = 1;
@@ -444,8 +468,7 @@ int main(int argc, char **argv)
                 if (strcmp(action, "dismiss") == 0) {
                     CardType top = card_stack_top(&cards);
                     if (top == CARD_CONTEXT_MENU) {
-                        context_menu_hide(&ctx_menu);
-                        card_stack_pop(&cards, CARD_CONTEXT_MENU);
+                        close_context_menu(&ctx_menu, &cards);
                         need_redraw = 1;
                     } else if (top == CARD_SESSION_SWITCHER) {
                         session_switcher_hide(&switcher);
@@ -496,7 +519,7 @@ int main(int argc, char **argv)
         if (ipc_connected) {
             cJSON *msg;
             while ((msg = masko_ipc_recv(&ipc)) != NULL) {
-                handle_ipc_message(&win, &playback, &cards, &perm, &toast, &switcher, msg);
+                handle_ipc_message(&win, &playback, &cards, &perm, &toast, &switcher, &ctx_menu, msg);
                 need_redraw = 1;
                 cJSON_Delete(msg);
             }
@@ -551,15 +574,13 @@ int main(int argc, char **argv)
             if (switcher.visible)
                 session_switcher_draw(&switcher, cr, win.width, win.height);
 
-            if (ctx_menu.visible)
-                context_menu_draw(&ctx_menu, cr, win.x, win.y);
-
             masko_window_flip(&win);
         }
     }
 
     hotkeys_ungrab(&hotkeys);
     stop_playback(&playback);
+    context_menu_destroy_popup(&ctx_menu);
     if (ipc_connected)
         masko_ipc_disconnect(&ipc);
     masko_window_destroy(&win);

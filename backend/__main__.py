@@ -10,6 +10,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from backend.actions import ActionRegistry
 from backend.config import Config
 from backend.event_processor import EventProcessor
 from backend.ipc import IPCServer
@@ -110,12 +111,46 @@ class Orchestrator:
             config, self.state_machine, self.event_processor, self.ipc, self,
         )
 
+        self.actions = ActionRegistry()
+
         self.overlay_ready = False
         self.overlay_process = None
         self._respawn_count = 0
         self._shutdown = False
 
+        self._wire_actions()
         self._wire_state_machine()
+
+    def _wire_actions(self):
+        async def open_dashboard():
+            xdg = shutil.which("xdg-open")
+            if xdg:
+                url = f"http://localhost:{self.config.dashboard_port}"
+                subprocess.Popen([xdg, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        async def change_mascot():
+            xdg = shutil.which("xdg-open")
+            if xdg:
+                url = f"http://localhost:{self.config.dashboard_port}#settings"
+                subprocess.Popen([xdg, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        async def reset_position():
+            self.config._data["overlay"]["x"] = 100
+            self.config._data["overlay"]["y"] = 100
+            self.config.save()
+            await self.ipc.send({"cmd": "move", "x": 100, "y": 100})
+
+        async def toggle_visibility():
+            await self.ipc.send({"cmd": "toggle"})
+
+        async def quit_app():
+            self._shutdown = True
+
+        self.actions.get("open_dashboard").handler = open_dashboard
+        self.actions.get("change_mascot").handler = change_mascot
+        self.actions.get("reset_position").handler = reset_position
+        self.actions.get("toggle_visibility").handler = toggle_visibility
+        self.actions.get("quit").handler = quit_app
 
     def _load_mascot_config(self) -> dict:
         mascot_name = self.config.selected_mascot
@@ -182,6 +217,7 @@ class Orchestrator:
             self.overlay_ready = True
             self._respawn_count = 0
             logger.info("Overlay ready")
+            await self.ipc.send({"cmd": "set_menu", "items": self.actions.to_menu_json()})
             self.state_machine.start()
 
         elif msg_type == "permission_response":
@@ -197,6 +233,7 @@ class Orchestrator:
             logger.error("Overlay error: %s", msg.get("message", "unknown"))
 
         elif msg_type == "menu":
+            logger.info("Menu action: %s", msg.get("action", ""))
             await self._handle_menu_action(msg.get("action", ""))
 
         elif msg_type == "position":
@@ -218,31 +255,13 @@ class Orchestrator:
         toast = self.session_finished.make_toast_data(session)
         await self.ipc.send({"cmd": "toast", **toast})
 
-    async def _handle_menu_action(self, action):
-        dashboard_url = f"http://localhost:{self.config.dashboard_port}"
-
-        if action == "open_dashboard":
-            xdg = shutil.which("xdg-open")
-            if xdg:
-                subprocess.Popen([xdg, dashboard_url],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        elif action == "open_settings":
-            xdg = shutil.which("xdg-open")
-            if xdg:
-                subprocess.Popen([xdg, f"{dashboard_url}#settings"],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        elif action == "reset_position":
-            default_x, default_y = 100, 100
-            self.config._data["overlay"]["x"] = default_x
-            self.config._data["overlay"]["y"] = default_y
-            self.config.save()
-            await self.ipc.send({"cmd": "move", "x": default_x, "y": default_y})
+    async def _handle_menu_action(self, action_id):
+        logger.info("Action: %s", action_id)
+        await self.actions.execute(action_id)
 
     async def _handle_hotkey(self, key):
         if key == "toggle":
-            pass
+            await self.actions.execute("toggle_visibility")
         elif key == "session_switcher":
             await self._toggle_session_switcher()
         elif key == "session_next":
@@ -319,6 +338,15 @@ class Orchestrator:
             if self._shutdown:
                 break
 
+            # Capture stderr from the crashed overlay
+            stderr_data = b""
+            if self.overlay_process.stderr:
+                try:
+                    stderr_data = await asyncio.wait_for(self.overlay_process.stderr.read(), timeout=1)
+                except asyncio.TimeoutError:
+                    pass
+            if stderr_data:
+                logger.warning("Overlay stderr: %s", stderr_data.decode(errors="replace").strip()[-500:])
             logger.warning("Overlay exited (code=%s)", self.overlay_process.returncode)
             self.overlay_ready = False
             self.overlay_process = None
@@ -385,6 +413,8 @@ async def main():
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         stream=sys.stderr,
     )
+    # Suppress noisy aiohttp access logs (every health check from hooks)
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
     config = Config(path=args.config)
     orchestrator = Orchestrator(config)
@@ -419,7 +449,7 @@ async def main():
 
     logger.info("Masko hook server listening on 127.0.0.1:%d", config.hook_port)
 
-    dashboard_app = create_dashboard_app(orchestrator.app)
+    dashboard_app = create_dashboard_app(orchestrator.app, orchestrator=orchestrator)
     dashboard_runner = web.AppRunner(dashboard_app)
     await dashboard_runner.setup()
     try:
