@@ -6,10 +6,11 @@ typedef enum {
     CARD_TOAST = 1,
     CARD_PERMISSION = 2,
     CARD_SESSION_SWITCHER = 3,
+    CARD_CONTEXT_MENU = 4,
 } CardType;
 
 typedef struct {
-    int cards[4]; /* 1 if active, indexed by CardType */
+    int cards[5]; /* 1 if active, indexed by CardType */
 } CardStack;
 
 void     card_stack_init(CardStack *cs);

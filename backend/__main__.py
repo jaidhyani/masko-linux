@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -194,6 +196,9 @@ class Orchestrator:
         elif msg_type == "error":
             logger.error("Overlay error: %s", msg.get("message", "unknown"))
 
+        elif msg_type == "menu":
+            await self._handle_menu_action(msg.get("action", ""))
+
         elif msg_type == "position":
             x, y = msg.get("x", 100), msg.get("y", 100)
             self.config._data["overlay"]["x"] = x
@@ -212,6 +217,28 @@ class Orchestrator:
             return
         toast = self.session_finished.make_toast_data(session)
         await self.ipc.send({"cmd": "toast", **toast})
+
+    async def _handle_menu_action(self, action):
+        dashboard_url = f"http://localhost:{self.config.dashboard_port}"
+
+        if action == "open_dashboard":
+            xdg = shutil.which("xdg-open")
+            if xdg:
+                subprocess.Popen([xdg, dashboard_url],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        elif action == "open_settings":
+            xdg = shutil.which("xdg-open")
+            if xdg:
+                subprocess.Popen([xdg, f"{dashboard_url}#settings"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        elif action == "reset_position":
+            default_x, default_y = 100, 100
+            self.config._data["overlay"]["x"] = default_x
+            self.config._data["overlay"]["y"] = default_y
+            self.config.save()
+            await self.ipc.send({"cmd": "move", "x": default_x, "y": default_y})
 
     async def _handle_hotkey(self, key):
         if key == "toggle":

@@ -6,6 +6,7 @@
 #include "permission_ui.h"
 #include "toast.h"
 #include "session_switcher.h"
+#include "context_menu.h"
 #include "hotkeys.h"
 
 #include <stdio.h>
@@ -268,10 +269,12 @@ int main(int argc, char **argv)
     PermissionUI perm;
     ToastUI toast;
     SessionSwitcherUI switcher;
+    ContextMenu ctx_menu;
     card_stack_init(&cards);
     permission_ui_init(&perm);
     toast_init(&toast);
     session_switcher_init(&switcher);
+    context_menu_init(&ctx_menu);
     int need_redraw = 0;
     int iterations = 0;
     struct timeval last_tick;
@@ -324,44 +327,82 @@ int main(int argc, char **argv)
                 break;
 
             case ButtonPress:
-                if (ev.xbutton.button == 1) {
-                    int sw_hit = session_switcher_hit_test(&switcher,
-                                     ev.xbutton.x, ev.xbutton.y,
-                                     win.width, win.height);
-                    int perm_hit = permission_ui_hit_test(&perm,
-                                       ev.xbutton.x, ev.xbutton.y);
-
-                    if (sw_hit >= 0) {
-                        if (ipc_connected) {
-                            cJSON *resp = cJSON_CreateObject();
-                            cJSON_AddStringToObject(resp, "event", "hotkey");
-                            cJSON_AddStringToObject(resp, "key", "session_confirm");
-                            cJSON_AddNumberToObject(resp, "index", sw_hit);
-                            masko_ipc_send(&ipc, resp);
-                            cJSON_Delete(resp);
+                if (ev.xbutton.button == 3) {
+                    /* Right-click: toggle context menu */
+                    if (ctx_menu.visible) {
+                        int hit = context_menu_hit_test(&ctx_menu,
+                                      ev.xbutton.x, ev.xbutton.y, 0, 0);
+                        if (hit < 0) {
+                            context_menu_hide(&ctx_menu);
+                            card_stack_pop(&cards, CARD_CONTEXT_MENU);
                         }
-                        session_switcher_hide(&switcher);
-                        card_stack_pop(&cards, CARD_SESSION_SWITCHER);
-                        need_redraw = 1;
-                    } else if (perm_hit) {
-                        const char *action = (perm_hit == 1) ? "approve" : "deny";
-                        if (ipc_connected) {
-                            cJSON *resp = cJSON_CreateObject();
-                            cJSON_AddStringToObject(resp, "event", "permission_response");
-                            cJSON_AddStringToObject(resp, "id", perm.perm_id);
-                            cJSON_AddStringToObject(resp, "action", action);
-                            masko_ipc_send(&ipc, resp);
-                            cJSON_Delete(resp);
+                    } else {
+                        context_menu_show(&ctx_menu, ev.xbutton.x, ev.xbutton.y);
+                        card_stack_push(&cards, CARD_CONTEXT_MENU);
+                    }
+                    need_redraw = 1;
+                } else if (ev.xbutton.button == 1) {
+                    /* Left-click: check context menu first */
+                    if (ctx_menu.visible) {
+                        int menu_hit = context_menu_hit_test(&ctx_menu,
+                                           ev.xbutton.x, ev.xbutton.y, 0, 0);
+                        if (menu_hit >= 0) {
+                            const char *act = ctx_menu.items[menu_hit].action;
+                            if (strcmp(act, "quit") == 0) {
+                                running = 0;
+                            } else if (strcmp(act, "toggle") == 0) {
+                                if (ipc_connected)
+                                    send_hotkey_event(&ipc, "toggle");
+                            } else if (ipc_connected) {
+                                cJSON *resp = cJSON_CreateObject();
+                                cJSON_AddStringToObject(resp, "event", "menu");
+                                cJSON_AddStringToObject(resp, "action", act);
+                                masko_ipc_send(&ipc, resp);
+                                cJSON_Delete(resp);
+                            }
                         }
-                        permission_ui_hide(&perm);
-                        card_stack_pop(&cards, CARD_PERMISSION);
+                        context_menu_hide(&ctx_menu);
+                        card_stack_pop(&cards, CARD_CONTEXT_MENU);
                         need_redraw = 1;
                     } else {
-                        drag.active = 1;
-                        drag.start_mouse_x = ev.xbutton.x_root;
-                        drag.start_mouse_y = ev.xbutton.y_root;
-                        drag.start_win_x   = win.x;
-                        drag.start_win_y   = win.y;
+                        int sw_hit = session_switcher_hit_test(&switcher,
+                                         ev.xbutton.x, ev.xbutton.y,
+                                         win.width, win.height);
+                        int perm_hit = permission_ui_hit_test(&perm,
+                                           ev.xbutton.x, ev.xbutton.y);
+
+                        if (sw_hit >= 0) {
+                            if (ipc_connected) {
+                                cJSON *resp = cJSON_CreateObject();
+                                cJSON_AddStringToObject(resp, "event", "hotkey");
+                                cJSON_AddStringToObject(resp, "key", "session_confirm");
+                                cJSON_AddNumberToObject(resp, "index", sw_hit);
+                                masko_ipc_send(&ipc, resp);
+                                cJSON_Delete(resp);
+                            }
+                            session_switcher_hide(&switcher);
+                            card_stack_pop(&cards, CARD_SESSION_SWITCHER);
+                            need_redraw = 1;
+                        } else if (perm_hit) {
+                            const char *action = (perm_hit == 1) ? "approve" : "deny";
+                            if (ipc_connected) {
+                                cJSON *resp = cJSON_CreateObject();
+                                cJSON_AddStringToObject(resp, "event", "permission_response");
+                                cJSON_AddStringToObject(resp, "id", perm.perm_id);
+                                cJSON_AddStringToObject(resp, "action", action);
+                                masko_ipc_send(&ipc, resp);
+                                cJSON_Delete(resp);
+                            }
+                            permission_ui_hide(&perm);
+                            card_stack_pop(&cards, CARD_PERMISSION);
+                            need_redraw = 1;
+                        } else {
+                            drag.active = 1;
+                            drag.start_mouse_x = ev.xbutton.x_root;
+                            drag.start_mouse_y = ev.xbutton.y_root;
+                            drag.start_win_x   = win.x;
+                            drag.start_win_y   = win.y;
+                        }
                     }
                 }
                 break;
@@ -371,6 +412,9 @@ int main(int argc, char **argv)
                     int nx = drag.start_win_x + (ev.xmotion.x_root - drag.start_mouse_x);
                     int ny = drag.start_win_y + (ev.xmotion.y_root - drag.start_mouse_y);
                     masko_window_move(&win, nx, ny);
+                } else if (ctx_menu.visible) {
+                    context_menu_hover(&ctx_menu, ev.xmotion.x, ev.xmotion.y, 0, 0);
+                    need_redraw = 1;
                 } else if (perm.visible) {
                     permission_ui_hover(&perm, ev.xmotion.x, ev.xmotion.y);
                     need_redraw = 1;
@@ -399,7 +443,11 @@ int main(int argc, char **argv)
 
                 if (strcmp(action, "dismiss") == 0) {
                     CardType top = card_stack_top(&cards);
-                    if (top == CARD_SESSION_SWITCHER) {
+                    if (top == CARD_CONTEXT_MENU) {
+                        context_menu_hide(&ctx_menu);
+                        card_stack_pop(&cards, CARD_CONTEXT_MENU);
+                        need_redraw = 1;
+                    } else if (top == CARD_SESSION_SWITCHER) {
                         session_switcher_hide(&switcher);
                         card_stack_pop(&cards, CARD_SESSION_SWITCHER);
                         need_redraw = 1;
@@ -502,6 +550,9 @@ int main(int argc, char **argv)
 
             if (switcher.visible)
                 session_switcher_draw(&switcher, cr, win.width, win.height);
+
+            if (ctx_menu.visible)
+                context_menu_draw(&ctx_menu, cr, win.x, win.y);
 
             masko_window_flip(&win);
         }
