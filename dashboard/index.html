@@ -346,6 +346,17 @@ async function renderSettings(config) {
             </div>
         </div>
 
+        <div class="settings-group">
+            <h3>Animation States</h3>
+            <p style="color:#888;font-size:0.85rem;margin-bottom:0.5rem">Trigger mascot state transitions manually</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="small" onclick="triggerState('idle')" style="min-width:100px">😴 Idle</button>
+                <button class="small" onclick="triggerState('working')" style="min-width:100px">💻 Working</button>
+                <button class="small" onclick="triggerState('alert')" style="min-width:100px">⚠️ Needs Attention</button>
+                <button class="small" onclick="triggerState('thinking')" style="min-width:100px">🤔 Thinking</button>
+            </div>
+        </div>
+
         ${actions.length ? `
         <div class="settings-group">
             <h3>Actions</h3>
@@ -473,6 +484,14 @@ async function selectMascot(name) {
 
 async function executeAction(actionId) {
     await fetch(API_BASE + "/api/actions/" + actionId, { method: "POST" });
+}
+
+async function triggerState(state) {
+    await fetch(API_BASE + "/api/trigger-state", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({state: state})
+    });
 }
 
 // --- WebSocket ---

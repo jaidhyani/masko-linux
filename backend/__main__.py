@@ -170,6 +170,14 @@ class Orchestrator:
             sys.exit(1)
         return json.loads(mascot_path.read_text())
 
+    def _precache_videos(self):
+        """Pre-resolve all video URLs for the current mascot to avoid startup delays."""
+        for edge in self.state_machine.config["edges"]:
+            for fmt in ("webm", "hevc"):
+                url = edge.get("videos", {}).get(fmt)
+                if url:
+                    self.video_cache.resolve(url)
+
     def _wire_state_machine(self):
         key = MASCOT_CHROMA_KEYS.get(self.config.selected_mascot, (158, 212, 223))
         chroma_key = {"r": key[0], "g": key[1], "b": key[2]}
@@ -178,9 +186,22 @@ class Orchestrator:
             logger.info("State transition → %s, video: %s", edge.get("target", "?"), video_url)
             resolved = self.video_cache.resolve(video_url)
             logger.info("Resolved video: %s", resolved)
+
+            # Find the target node's loop edge to pre-send the next video
+            target_id = edge["target"]
+            loop_video = None
+            for e in self.state_machine.config["edges"]:
+                if e["source"] == target_id and e["target"] == target_id and e.get("isLoop"):
+                    v = e.get("videos", {})
+                    url = v.get("webm") or v.get("hevc")
+                    if url:
+                        loop_video = self.video_cache.resolve(url)
+                    break
+
             asyncio.ensure_future(self.ipc.send({
                 "cmd": "play", "video": resolved, "loop": False,
                 "chroma_key": chroma_key,
+                "next_video": loop_video,
             }))
 
         def on_loop_start(video_url):
@@ -380,6 +401,10 @@ class Orchestrator:
     async def start(self):
         await self.ipc.start()
         await self._spawn_overlay()
+
+        # Pre-cache all videos in background to avoid delays
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, self._precache_videos)
 
         self.state_machine.start()
 

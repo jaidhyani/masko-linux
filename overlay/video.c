@@ -30,7 +30,11 @@ int masko_video_open(MaskoVideo *v, const char *path)
     }
 
     AVCodecParameters *par = v->fmt_ctx->streams[v->stream_idx]->codecpar;
-    const AVCodec *codec = avcodec_find_decoder(par->codec_id);
+
+    /* Prefer libvpx-vp9 which properly decodes VP9 alpha (yuva420p) */
+    const AVCodec *codec = avcodec_find_decoder_by_name("libvpx-vp9");
+    if (!codec || codec->id != par->codec_id)
+        codec = avcodec_find_decoder(par->codec_id);
     if (!codec) {
         avformat_close_input(&v->fmt_ctx);
         return -1;
@@ -55,15 +59,15 @@ int masko_video_open(MaskoVideo *v, const char *path)
     av_image_fill_arrays(v->frame_rgba->data, v->frame_rgba->linesize,
                          v->rgba_buf, AV_PIX_FMT_BGRA, v->width, v->height, 1);
 
-    v->sws_ctx = sws_getContext(v->width, v->height, v->codec_ctx->pix_fmt,
-                                 v->width, v->height, AV_PIX_FMT_BGRA,
-                                 SWS_BILINEAR, NULL, NULL, NULL);
+    /* Defer sws_ctx creation to first frame — pix_fmt may change with libvpx-vp9 alpha */
+    v->sws_ctx = NULL;
 
     v->surface = cairo_image_surface_create_for_data(
         v->rgba_buf, CAIRO_FORMAT_ARGB32, v->width, v->height,
         v->frame_rgba->linesize[0]
     );
     v->finished = 0;
+    v->has_native_alpha = 0;
 
     return 0;
 }
@@ -86,14 +90,44 @@ cairo_surface_t *masko_video_next_frame(MaskoVideo *v)
 
         ret = avcodec_receive_frame(v->codec_ctx, v->frame);
         if (ret == 0) {
+            /* Lazy sws_ctx init — actual pix_fmt known after first decode */
+            if (!v->sws_ctx) {
+                enum AVPixelFormat src_fmt = v->frame->format;
+                v->has_native_alpha = (src_fmt == AV_PIX_FMT_YUVA420P ||
+                                       src_fmt == AV_PIX_FMT_YUVA444P);
+                if (v->has_native_alpha)
+                    fprintf(stderr, "masko-overlay: video has native alpha (yuva)\n");
+                v->sws_ctx = sws_getContext(v->width, v->height, src_fmt,
+                                             v->width, v->height, AV_PIX_FMT_BGRA,
+                                             SWS_BILINEAR, NULL, NULL, NULL);
+            }
+
             sws_scale(v->sws_ctx, (const uint8_t *const *)v->frame->data,
                       v->frame->linesize, 0, v->height,
                       v->frame_rgba->data, v->frame_rgba->linesize);
 
-            /* Chroma-key: remove the mascot's background color using
-               RGB distance. Works for both saturated (teal/cyan) and
-               unsaturated (grey) backgrounds. */
-            if (v->has_key) {
+            /* Pre-multiply alpha for Cairo ARGB32 format */
+            if (v->has_native_alpha) {
+                int stride = v->frame_rgba->linesize[0];
+                for (int y = 0; y < v->height; y++) {
+                    uint8_t *row = v->rgba_buf + y * stride;
+                    for (int x = 0; x < v->width; x++) {
+                        uint8_t a = row[x * 4 + 3];
+                        if (a == 0) {
+                            row[x * 4 + 0] = 0;
+                            row[x * 4 + 1] = 0;
+                            row[x * 4 + 2] = 0;
+                        } else if (a < 255) {
+                            row[x * 4 + 0] = (uint8_t)((unsigned)row[x * 4 + 0] * a / 255);
+                            row[x * 4 + 1] = (uint8_t)((unsigned)row[x * 4 + 1] * a / 255);
+                            row[x * 4 + 2] = (uint8_t)((unsigned)row[x * 4 + 2] * a / 255);
+                        }
+                    }
+                }
+            }
+
+            /* Chroma-key fallback: only if video lacks native alpha */
+            if (v->has_key && !v->has_native_alpha) {
                 int stride = v->frame_rgba->linesize[0];
                 int kr = v->key_r, kg = v->key_g, kb = v->key_b;
                 for (int y = 0; y < v->height; y++) {

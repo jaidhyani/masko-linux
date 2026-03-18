@@ -19,6 +19,7 @@ typedef struct {
     uint8_t *rgba_buf;
     cairo_surface_t *surface;
     int finished;
+    int has_native_alpha;
     int key_r, key_g, key_b;
     int has_key;
 } MaskoVideo;

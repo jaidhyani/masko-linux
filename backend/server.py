@@ -79,6 +79,7 @@ def create_dashboard_app(hook_app, orchestrator=None):
     app.router.add_get("/api/mascots", handle_api_mascots)
     app.router.add_post("/api/notifications/{id}/read", handle_notif_read)
     app.router.add_post("/api/notifications/clear", handle_notif_clear)
+    app.router.add_post("/api/trigger-state", handle_trigger_state)
     app.router.add_get("/ws", handle_websocket)
     app.router.add_get("/", handle_dashboard)
     app.router.add_static("/dashboard/", DASHBOARD_DIR)
@@ -228,6 +229,34 @@ async def handle_api_config_post(request):
         orchestrator.state_machine = StateMachine(mascot_config)
         orchestrator._wire_state_machine()
         orchestrator.state_machine.start()
+
+    return web.Response(text="ok")
+
+
+STATE_INPUTS = {
+    "idle":     {"claudeCode::isIdle": True,  "claudeCode::isWorking": False, "claudeCode::isAlert": False, "claudeCode::isCompacting": False},
+    "working":  {"claudeCode::isIdle": False, "claudeCode::isWorking": True,  "claudeCode::isAlert": False, "claudeCode::isCompacting": False},
+    "alert":    {"claudeCode::isAlert": True},
+    "thinking": {"claudeCode::isIdle": False, "claudeCode::isWorking": False, "claudeCode::isAlert": False, "claudeCode::isCompacting": True},
+}
+
+
+async def handle_trigger_state(request):
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.Response(status=400, text="invalid json")
+
+    state = data.get("state", "")
+    inputs = STATE_INPUTS.get(state)
+    if not inputs:
+        return web.Response(status=400, text=f"unknown state: {state}")
+
+    sm = request.app.get("state_machine")
+    if sm:
+        from backend.state_machine import ConditionValue
+        for name, value in inputs.items():
+            sm.set_input(name, ConditionValue(value))
 
     return web.Response(text="ok")
 

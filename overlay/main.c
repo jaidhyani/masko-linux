@@ -40,6 +40,11 @@ typedef struct {
     int is_looping;
     double fps;
     struct timeval last_frame_time;
+    int ended;      /* set when a non-looping video finishes */
+    int has_played; /* set once any video has played — suppresses placeholder */
+    char next_video[1024];  /* pre-loaded path for the video after this one */
+    int has_next;
+    int chroma_r, chroma_g, chroma_b, has_chroma;
 } PlaybackState;
 
 static double elapsed_ms(struct timeval *from, struct timeval *to)
@@ -78,6 +83,7 @@ static void render_video_frame(MaskoWindow *w, PlaybackState *ps)
         }
         if (!frame) {
             ps->is_playing = 0;
+            ps->ended = 1;
             return;
         }
     }
@@ -153,13 +159,29 @@ static void handle_ipc_message(MaskoWindow *w, PlaybackState *ps,
             int kr = cJSON_GetObjectItem(jkey, "r")->valueint;
             int kg = cJSON_GetObjectItem(jkey, "g")->valueint;
             int kb = cJSON_GetObjectItem(jkey, "b")->valueint;
+            ps->chroma_r = kr;
+            ps->chroma_g = kg;
+            ps->chroma_b = kb;
+            ps->has_chroma = 1;
             masko_video_set_chroma_key(&ps->video, kr, kg, kb);
+        }
+
+        /* Parse next_video for seamless transition */
+        cJSON *jnext = cJSON_GetObjectItem(msg, "next_video");
+        if (jnext && cJSON_IsString(jnext)) {
+            strncpy(ps->next_video, jnext->valuestring, sizeof(ps->next_video) - 1);
+            ps->next_video[sizeof(ps->next_video) - 1] = '\0';
+            ps->has_next = 1;
+        } else {
+            ps->has_next = 0;
+            ps->next_video[0] = '\0';
         }
 
         cJSON *jloop = cJSON_GetObjectItem(msg, "loop");
         ps->is_looping = (jloop && cJSON_IsTrue(jloop)) ? 1 : 0;
         ps->fps = masko_video_fps(&ps->video);
         ps->is_playing = 1;
+        ps->has_played = 1;
         gettimeofday(&ps->last_frame_time, NULL);
 
         render_video_frame(w, ps);
@@ -548,6 +570,37 @@ int main(int argc, char **argv)
             }
         }
 
+        /* Non-looping video ended — switch to pre-sent next video or notify backend */
+        if (playback.ended) {
+            playback.ended = 0;
+            masko_video_close(&playback.video);
+
+            if (playback.has_next && playback.next_video[0]) {
+                /* Instant switch to pre-sent next video */
+                if (masko_video_open(&playback.video, playback.next_video) == 0) {
+                    /* Apply stored chroma key */
+                    if (playback.has_chroma)
+                        masko_video_set_chroma_key(&playback.video,
+                            playback.chroma_r, playback.chroma_g, playback.chroma_b);
+                    playback.is_looping = 1;
+                    playback.is_playing = 1;
+                    playback.fps = masko_video_fps(&playback.video);
+                    gettimeofday(&playback.last_frame_time, NULL);
+                    render_video_frame(&win, &playback);
+                    need_redraw = 1;
+                }
+                playback.has_next = 0;
+            }
+
+            /* Still notify backend so state machine advances */
+            if (ipc_connected) {
+                cJSON *msg = cJSON_CreateObject();
+                cJSON_AddStringToObject(msg, "event", "video_ended");
+                masko_ipc_send(&ipc, msg);
+                cJSON_Delete(msg);
+            }
+        }
+
         /* Tick toast timer */
         if (toast.visible) {
             if (!toast_tick(&toast, delta_ms)) {
@@ -562,8 +615,9 @@ int main(int argc, char **argv)
         if (need_redraw) {
             need_redraw = 0;
 
-            /* Base content */
-            if (!playback.is_playing)
+            /* Base content: keep last frame visible between videos
+               to avoid placeholder flash during transitions */
+            if (!playback.is_playing && !playback.has_played)
                 draw_placeholder(&win);
 
             cairo_t *cr = masko_window_back_cr(&win);
